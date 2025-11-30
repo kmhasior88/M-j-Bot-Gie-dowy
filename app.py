@@ -30,10 +30,10 @@ def calculate_rsi(series, period=14):
     return 100 - (100 / (1 + rs))
 
 def get_data_for_ai(ticker):
-    """Pobiera dane dla AI z rozróżnieniem na Akcje i ETFy."""
+    """Pobiera dane dla AI z naprawioną obsługą dywidend."""
     t = yf.Ticker(ticker)
     
-    # Historia cen
+    # Historia cen (6 miesięcy)
     df = t.history(period="6mo")
     if df.empty: return None
     
@@ -49,9 +49,27 @@ def get_data_for_ai(ticker):
     pe = info.get('trailingPE', 'Brak (ETF?)')
     pb = info.get('priceToBook', '-')
     
-    # Dywidenda (Yield)
-    div_yield = info.get('dividendYield', 0)
-    div_str = f"{round(div_yield*100, 2)}%" if div_yield else "0% (lub Akumulujący)"
+    # --- NAPRAWA DYWIDENDY (BUG FIX) ---
+    raw_yield = info.get('dividendYield', 0)
+    
+    # Jeśli Yahoo zwraca None lub bzdury (np. > 0.20 czyli 20%), liczymy sami
+    if raw_yield is None or raw_yield > 0.20:
+        try:
+            # Pobieramy ostatnią wypłaconą kwotę dywidendy
+            divs = t.dividends
+            if not divs.empty:
+                # Bierzemy ostatnią dywidendę
+                last_div = float(divs.iloc[-1])
+                # Ręczne wyliczenie: (Kwota / Cena) * 100
+                calc_yield = (last_div / current_price) * 100
+                div_str = f"{round(calc_yield, 2)}% (Szac.)"
+            else:
+                div_str = "0% (ETF/Brak)"
+        except:
+            div_str = "-"
+    else:
+        # Jeśli dane są normalne (np. 0.09), to mnożymy x100
+        div_str = f"{round(raw_yield*100, 2)}%"
 
     return {
         "Cena": round(current_price, 2),
@@ -90,7 +108,7 @@ with tab1:
                 
                 # Kolor zmiany ceny
                 color = "normal"
-                if change > 0: color = "off" # Zielony w Streamlit metric
+                if change > 0: color = "off" # Zielony w Streamlit
                 else: color = "inverse"      # Czerwony
                 
                 col1, col2 = st.columns([1, 3])
@@ -100,7 +118,7 @@ with tab1:
                     st.line_chart(hist['Close'])
             st.markdown("---")
 
-# --- TAB 2: WIADOMOŚCI ---
+# --- TAB 2: WIADOMOŚCI (NAPRAWIONE) ---
 with tab2:
     st.header("Najnowsze komunikaty")
     selected_news = st.selectbox("Wybierz spółkę:", list(MY_TICKERS.keys()))
@@ -110,8 +128,20 @@ with tab2:
     
     if news:
         for n in news:
-            pub_date = datetime.fromtimestamp(n['providerPublishTime']).strftime('%Y-%m-%d')
-            st.markdown(f"**{pub_date}** | [{n['title']}]({n['link']})")
+            # --- ZABEZPIECZENIE PRZED BRAKIEM DATY (BUG FIX) ---
+            try:
+                timestamp = n.get('providerPublishTime')
+                if timestamp:
+                    pub_date = datetime.fromtimestamp(timestamp).strftime('%Y-%m-%d')
+                else:
+                    pub_date = "Niedawno"
+                
+                title = n.get('title', 'Bez tytułu')
+                link = n.get('link', '#')
+                
+                st.markdown(f"**{pub_date}** | [{title}]({link})")
+            except Exception:
+                continue # Pomijamy uszkodzony news
     else:
         st.info("Brak nowych wiadomości w systemie Yahoo Finance.")
 
