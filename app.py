@@ -1,10 +1,25 @@
 import streamlit as st
 import yfinance as yf
 import pandas as pd
-import matplotlib.pyplot as plt
+from datetime import datetime
 
 # ---------------------------
-# 🧠 MÓZG BOTA (Ta sama logika co w PDF)
+# ⚙️ KONFIGURACJA
+# ---------------------------
+st.set_page_config(page_title="Mój Portfel XTB", page_icon="📈", layout="wide")
+
+# TWOJE RZECZYWISTE SPÓŁKI Z XTB
+MY_TICKERS = {
+    "GPW.WA": "GPW (Giełda)",
+    "PEO.WA": "Bank Pekao",
+    "KTY.WA": "Grupa Kęty",
+    "KRU.WA": "Kruk SA",
+    "EUNL.DE": "iShares MSCI World (ETF)",
+    "SXR8.DE": "iShares S&P 500 (ETF)"
+}
+
+# ---------------------------
+# 🧠 FUNKCJE ANALITYCZNE
 # ---------------------------
 
 def calculate_rsi(series, period=14):
@@ -14,114 +29,143 @@ def calculate_rsi(series, period=14):
     rs = gain / loss
     return 100 - (100 / (1 + rs))
 
-def get_advanced_analysis(ticker):
-    # Pobieranie danych
-    df = yf.download(ticker, period="2y", interval="1d", progress=False)
+def get_data_for_ai(ticker):
+    """Pobiera dane dla AI z rozróżnieniem na Akcje i ETFy."""
+    t = yf.Ticker(ticker)
     
+    # Historia cen
+    df = t.history(period="6mo")
     if df.empty: return None
     
-    # Obsługa błędów formatu danych (MultiIndex)
-    if isinstance(df.columns, pd.MultiIndex):
-        try:
-            close = df.xs('Close', level=0, axis=1)[ticker]
-        except KeyError:
-            close = df['Close']
-    else:
-        close = df['Close']
+    current_price = df["Close"].iloc[-1]
+    rsi = calculate_rsi(df["Close"]).iloc[-1]
     
-    close = close.astype(float).squeeze()
-    df_clean = pd.DataFrame({"Close": close})
+    # Średnie do trendu
+    ma50 = df["Close"].rolling(50).mean().iloc[-1]
+    trend = "Wzrostowy ↗" if current_price > ma50 else "Spadkowy ↘"
 
-    # Obliczenia wskaźników
-    df_clean["MA50"] = df_clean["Close"].rolling(50).mean()
-    df_clean["MA200"] = df_clean["Close"].rolling(200).mean()
-    df_clean["RSI"] = calculate_rsi(df_clean["Close"])
-    
-    # Zmienność
-    daily_returns = df_clean["Close"].pct_change()
-    volatility = daily_returns.std() * (252 ** 0.5) * 100 
-
-    # Fundamenty
-    t = yf.Ticker(ticker)
+    # Dane fundamentalne
     info = t.info
+    pe = info.get('trailingPE', 'Brak (ETF?)')
+    pb = info.get('priceToBook', '-')
     
-    pe = info.get('trailingPE', None)
-    pb = info.get('priceToBook', None)
-    reco = info.get("recommendationKey", "brak").upper().replace("_", " ")
-    
+    # Dywidenda (Yield)
+    div_yield = info.get('dividendYield', 0)
+    div_str = f"{round(div_yield*100, 2)}%" if div_yield else "0% (lub Akumulujący)"
+
     return {
-        "df": df_clean,
-        "current_price": df_clean["Close"].iloc[-1],
-        "volatility": volatility,
-        "rsi": df_clean["RSI"].iloc[-1],
-        "pe": round(pe, 2) if pe else "-",
-        "pb": round(pb, 2) if pb else "-",
-        "reco": reco
+        "Cena": round(current_price, 2),
+        "Waluta": info.get('currency', '?'),
+        "RSI": round(rsi, 1),
+        "Trend": trend,
+        "P/E": pe,
+        "P/B": pb,
+        "Dywidenda": div_str,
+        "Typ": info.get('quoteType', 'EQUITY') # Czy to ETF czy Akcja?
     }
 
 # ---------------------------
-# 📱 WYGLĄD APLIKACJI (INTERFEJS)
+# 🖥️ INTERFEJS APLIKACJI
 # ---------------------------
 
-st.set_page_config(page_title="Mój Portfel PRO", page_icon="📈")
+st.title("📈 Twój Portfel XTB + Doradca AI")
+st.caption("GPW | Pekao | Kęty | Kruk | S&P500 | MSCI World")
 
-st.title("📈 Centrum Dowodzenia")
-st.caption("Profesjonalna analiza w czasie rzeczywistym")
+# ZAKŁADKI
+tab1, tab2, tab3 = st.tabs(["📊 Stan Portfela", "📰 Wiadomości", "🤖 Zapytaj Gemini (AI)"])
 
-# Twoje spółki
-TICKERS = {
-    "PEO.WA": "Pekao SA",
-    "KTY.WA": "Grupa Kęty",
-    "SPY": "S&P 500",
-    "MSFT": "Microsoft"
-}
-
-# Przycisk odświeżania
-if st.button('🔄 Analizuj rynki'):
-    st.markdown("---")
-    
-    for ticker, name in TICKERS.items():
-        st.subheader(f"{name} ({ticker})")
+# --- TAB 1: PORTFEL ---
+with tab1:
+    if st.button('🔄 Odśwież Ceny'):
+        st.write("Pobieram najnowsze dane z giełd (Warszawa + Xetra)...")
         
-        with st.spinner(f'Przetwarzam dane dla {name}...'):
-            data = get_advanced_analysis(ticker)
+        for ticker, name in MY_TICKERS.items():
+            t = yf.Ticker(ticker)
+            hist = t.history(period="5d")
             
-            if data is None:
-                st.error("Brak danych")
-                continue
-
-            # 1. Główne Liczby (Metrics)
-            col1, col2, col3 = st.columns(3)
-            
-            # Kolorowanie RSI
-            rsi_val = data['rsi']
-            rsi_delta = "Neutralne"
-            if rsi_val > 70: rsi_delta = "⚠️ Wykupienie"
-            elif rsi_val < 30: rsi_delta = "✅ Okazja?"
-
-            col1.metric("Cena", f"{round(data['current_price'], 2)}", f"{data['reco']}")
-            col2.metric("RSI (14)", f"{round(rsi_val, 1)}", rsi_delta, delta_color="off")
-            col3.metric("Zmienność", f"{round(data['volatility'], 1)}%", "Ryzyko roczne", delta_color="inverse")
-
-            # 2. Fundamenty w tabelce
-            df_fund = pd.DataFrame({
-                "Wskaźnik": ["Cena / Zysk (P/E)", "Cena / WK (P/B)"],
-                "Wartość": [data['pe'], data['pb']]
-            })
-            st.dataframe(df_fund, hide_index=True, use_container_width=True)
-
-            # 3. Wykres Profesjonalny
-            fig, ax = plt.subplots(figsize=(10, 4))
-            ax.plot(data['df'].index, data['df']['Close'], label='Cena', color='black', linewidth=1)
-            ax.plot(data['df'].index, data['df']['MA50'], label='MA50', color='green', linestyle='--', alpha=0.7)
-            ax.plot(data['df'].index, data['df']['MA200'], label='MA200', color='red', linestyle='--', alpha=0.7)
-            ax.set_title("Analiza Techniczna")
-            ax.legend()
-            ax.grid(True, alpha=0.3)
-            
-            st.pyplot(fig)
-            
+            if not hist.empty:
+                current = hist['Close'].iloc[-1]
+                prev = hist['Close'].iloc[-2]
+                change = ((current - prev) / prev) * 100
+                
+                # Kolor zmiany ceny
+                color = "normal"
+                if change > 0: color = "off" # Zielony w Streamlit metric
+                else: color = "inverse"      # Czerwony
+                
+                col1, col2 = st.columns([1, 3])
+                with col1:
+                    st.metric(label=name, value=f"{round(current, 2)}", delta=f"{round(change, 2)}%", delta_color=color)
+                with col2:
+                    st.line_chart(hist['Close'])
             st.markdown("---")
 
-else:
-    st.info("Kliknij przycisk powyżej, aby pobrać najnowsze dane z giełdy.")
+# --- TAB 2: WIADOMOŚCI ---
+with tab2:
+    st.header("Najnowsze komunikaty")
+    selected_news = st.selectbox("Wybierz spółkę:", list(MY_TICKERS.keys()))
+    
+    t = yf.Ticker(selected_news)
+    news = t.news
+    
+    if news:
+        for n in news:
+            pub_date = datetime.fromtimestamp(n['providerPublishTime']).strftime('%Y-%m-%d')
+            st.markdown(f"**{pub_date}** | [{n['title']}]({n['link']})")
+    else:
+        st.info("Brak nowych wiadomości w systemie Yahoo Finance.")
+
+# --- TAB 3: GENERATOR PROMPTÓW (AI) ---
+with tab3:
+    st.header("🧠 Inteligentna Analiza")
+    st.write("Wybierz walor, a bot przygotuje zestaw danych, o które zapytasz Gemini.")
+    
+    target = st.selectbox("Co analizujemy?", list(MY_TICKERS.keys()), format_func=lambda x: MY_TICKERS[x])
+    
+    if st.button("📝 Przygotuj Raport dla Gemini"):
+        with st.spinner("Analizuję wskaźniki..."):
+            name = MY_TICKERS[target]
+            data = get_data_for_ai(target)
+            
+            if data:
+                # Rozróżnienie zapytania (ETF vs Spółka)
+                if "ETF" in data['Typ'] or "ETF" in name:
+                    # PROMPT DLA ETF
+                    prompt = f"""
+                    Jesteś moim doradcą inwestycyjnym. Mam w portfelu ETF: **{name} ({target})**.
+                    
+                    Twarde dane od mojego bota:
+                    - Cena: {data['Cena']} {data['Waluta']}
+                    - Trend: {data['Trend']}
+                    - RSI: {data['RSI']} (Czy rynek jest przegrzany?)
+                    
+                    Twoje zadanie (przeszukaj sieć):
+                    1. Jakie są **największe spółki** w tym ETF-ie obecnie? Czy zaszły zmiany?
+                    2. Jaki jest sentyment dla rynków, które ten ETF pokrywa (np. USA lub Świat)?
+                    3. Czy w obecnej sytuacji makroekonomicznej (stopy procentowe, inflacja) warto dokupować ten ETF?
+                    4. Wnioski: Kupować, Trzymać czy Czekać na korektę?
+                    """
+                else:
+                    # PROMPT DLA SPÓŁKI (AKCJI)
+                    prompt = f"""
+                    Jesteś moim doradcą inwestycyjnym. Mam w portfelu spółkę: **{name} ({target})**.
+                    
+                    Twarde dane techniczne od bota:
+                    - Cena: {data['Cena']} {data['Waluta']}
+                    - Trend: {data['Trend']}
+                    - RSI: {data['RSI']}
+                    - P/E (Cena/Zysk): {data['P/E']}
+                    - Dywidenda: {data['Dywidenda']}
+                    
+                    Twoje zadanie (przeszukaj sieć pod kątem najnowszych informacji):
+                    1. Znajdź ostatnie **raporty finansowe/kwartalne**. Czy zyski rosną?
+                    2. **W co inwestuje firma?** Jakie ma plany rozwoju (np. nowe przejęcia, inwestycje)?
+                    3. Kiedy najbliższa **wypłata dywidendy** i czy jest zagrożona?
+                    4. Rekomendacje analityków (Kupuj/Sprzedaj) z ostatniego miesiąca.
+                    5. Podsumowanie: Czy przy obecnym RSI {data['RSI']} i newsach warto dokupić akcji?
+                    """
+                
+                st.text_area("Skopiuj to i wyślij do Gemini:", value=prompt, height=400)
+                st.success("Dane zebrane! Wyślij to do mnie na czacie.")
+            else:
+                st.error("Błąd pobierania danych.")
